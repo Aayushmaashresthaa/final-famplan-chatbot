@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="https://fontawesome.com/icons/microphone?f=classic&s=solid">
 </head>
 <body>
+    
     <nav class="navbar">
         <div class="nav-container">
             <div class="nav-left">
@@ -26,10 +27,17 @@
                 </ul>
             </div>
             <div class="nav-right">
-                <!-- <button class="btn-auth">Sign Up</button>
-                <button class="btn-auth btn-login">Login</button> -->
-                <button onclick="window.location.href='/login'" class="btn-auth btn-login">Login</button>
-                <button onclick="window.location.href='/signup'" class="btn-auth">Sign Up</button>
+                <!-- <button onclick="window.location.href='/login'" class="btn-auth btn-login">Login</button>
+                <button onclick="window.location.href='/signup'" class="btn-auth">Sign Up</button> -->
+
+                {% if username %}
+                    <button onclick="window.location.href='/profile'" class="btn-auth">My Account</button>
+                    <button onclick="window.location.href='/logout'" class="btn-auth btn-login">Logout</button>
+                {% else %}
+                    <button onclick="window.location.href='/login'" class="btn-auth btn-login">Login</button>
+                    <button onclick="window.location.href='/signup'" class="btn-auth">Sign Up</button>
+                {% endif %}
+                
             </div>
 
             
