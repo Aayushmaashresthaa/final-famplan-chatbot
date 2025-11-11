@@ -1,11 +1,30 @@
 from flask import Flask, render_template, request, jsonify, redirect, url_for, session
 import requests
 import json
+import os
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
+app.config['GOOGLE_OAUTH_ENABLED'] = False
+ 
+def is_strong_password(password: str) -> tuple[bool, str | None]:
+    """
+    Enforce strong password policy:
+    - At least 8 characters
+    - Contains lowercase, uppercase, digit, and special character
+    """
+    if not password or len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    has_lower = any(c.islower() for c in password)
+    has_upper = any(c.isupper() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    has_special = any(not c.isalnum() for c in password)
+    if not (has_lower and has_upper and has_digit and has_special):
+        return False, "Password must include uppercase, lowercase, number, and special character."
+    return True, None
 
-users = {}  # Temporary in-memory storage
+users = {}  # Temporary in-memory storage: {username: {"password_hash": str, "email": str|null, "name": str|null, "provider": "local"|"google"}}
 
 # SYSTEM_PROMPT = """
 # You are FamilyCare — an expert AI assistant specializing in family planning,
@@ -87,7 +106,17 @@ def signup():
         if username in users:
             return render_template('signup.html', error="Username already exists!")
 
-        users[username] = password
+        ok, msg = is_strong_password(password)
+        if not ok:
+            return render_template('signup.html', error=msg)
+
+        password_hash = generate_password_hash(password)
+        users[username] = {
+            "password_hash": password_hash,
+            "email": None,
+            "name": username,
+            "provider": "local"
+        }
         return redirect(url_for('login'))
     return render_template('signup.html')
 
@@ -101,17 +130,23 @@ def login():
         username = request.form['username']
         password = request.form['password']
 
-        if users.get(username) == password:
+        user_record = users.get(username)
+        if user_record and user_record.get("password_hash") and check_password_hash(user_record["password_hash"], password):
             session['user'] = username
+            session['email'] = user_record.get("email")
+            session['name'] = user_record.get("name") or username
+            session['provider'] = user_record.get("provider") or "local"
             return redirect(url_for('chat'))
-        else:
-            return render_template('login.html', error="Invalid username or password.")
+        return render_template('login.html', error="Invalid username or password.")
     return render_template('login.html')
 
 
 @app.route('/logout')
 def logout():
     session.pop('user', None)
+    session.pop('email', None)
+    session.pop('name', None)
+    session.pop('provider', None)
     return redirect(url_for('index'))
 
 
@@ -119,8 +154,76 @@ def logout():
 def profile():
     if 'user' not in session:
         return redirect(url_for('login'))
-    username = session['user']
-    return render_template('profile.html', username=username)
+    username = session.get('user')
+    name = session.get('name') or username
+    email = session.get('email')
+    provider = session.get('provider', 'local')
+    return render_template('profile.html', username=username, name=name, email=email, provider=provider)
+
+# --- Google OAuth (Authlib) ---
+try:
+    from authlib.integrations.flask_client import OAuth
+    oauth = OAuth(app)
+    app.config['GOOGLE_CLIENT_ID'] = os.getenv('GOOGLE_CLIENT_ID')
+    app.config['GOOGLE_CLIENT_SECRET'] = os.getenv('GOOGLE_CLIENT_SECRET')
+
+    oauth.register(
+        name='google',
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={'scope': 'openid email profile'}
+    )
+    app.config['GOOGLE_OAUTH_ENABLED'] = True
+
+    @app.route('/login/google')
+    def login_google():
+        if 'user' in session:
+            return redirect(url_for('chat'))
+        redirect_uri = url_for('google_auth', _external=True)
+        return oauth.google.authorize_redirect(redirect_uri)
+
+    @app.route('/auth/google')
+    def google_auth():
+        token = oauth.google.authorize_access_token()
+        userinfo = token.get('userinfo')
+        if not userinfo:
+            # Fallback for some providers
+            userinfo = oauth.google.parse_id_token(token)
+        if not userinfo:
+            return redirect(url_for('login'))
+
+        email = userinfo.get('email')
+        name = userinfo.get('name') or (userinfo.get('given_name') or '')
+        # Store or update in-memory user
+        username = email or name or 'google_user'
+        if username not in users:
+            users[username] = {
+                "password_hash": None,
+                "email": email,
+                "name": name or username,
+                "provider": "google"
+            }
+        else:
+            users[username].update({
+                "email": email,
+                "name": name or username,
+                "provider": "google"
+            })
+
+        session['user'] = username
+        session['email'] = email
+        session['name'] = name or username
+        session['provider'] = 'google'
+        return redirect(url_for('chat'))
+except Exception as _e:
+    # Authlib not installed or configuration missing; Google login will be unavailable.
+    pass
+
+# Make auth feature flags available in all templates
+@app.context_processor
+def inject_auth_flags():
+    return {
+        'google_oauth_enabled': app.config.get('GOOGLE_OAUTH_ENABLED', False)
+    }
 
 
 @app.route('/get_response', methods=['POST'])
